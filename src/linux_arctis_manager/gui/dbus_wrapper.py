@@ -133,6 +133,28 @@ class DbusWrapper(QObject):
         request_thread.start()
     
     @staticmethod
+    def change_mixer_balance(balance: int) -> None:
+        request_thread = Thread(target=DbusWrapper.change_mixer_balance_thread, kwargs={'balance': balance})
+        request_thread.start()
+
+    @staticmethod
+    def change_mixer_balance_thread(balance: int):
+        asyncio.run(DbusWrapper.change_mixer_balance_async(balance))
+
+    @staticmethod
+    async def change_mixer_balance_async(balance: int):
+        dbus_bus = await MessageBus().connect()
+        await dbus_bus.call(Message(
+            destination=DBUS_BUS_NAME,
+            path=DBUS_STATUS_OBJECT_PATH,
+            interface=DBUS_STATUS_INTERFACE_NAME,
+            member='SetMixerBalance',
+            message_type=MessageType.METHOD_CALL,
+            signature='i',
+            body=[balance],
+        ))
+
+    @staticmethod
     def change_setting_thread(name: str, value: int|bool|str):
         asyncio.run(DbusWrapper.change_setting_async(name, value))
     

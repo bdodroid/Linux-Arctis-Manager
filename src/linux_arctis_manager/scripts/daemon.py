@@ -80,7 +80,7 @@ def check_single_instance(replace: bool) -> None:
 
 
 async def main_async():
-    logging.basicConfig(level=logging.INFO, format='[%(levelname)7s] %(name)20s: %(message)s')
+    logging.basicConfig(level=logging.DEBUG, format='[%(levelname)7s] %(name)20s: %(message)s')
 
     logger = logging.getLogger('Daemon')
     logger.info('-------------------------------')

@@ -75,6 +75,11 @@ class ArctisManagerDbusStatusService(ServiceInterface):
     def method_get_status(self) -> 's': # type: ignore
         return self._device_status_to_dbus_status(self.core_engine.device_status, self.core_engine.device_config)
 
+    @method('SetMixerBalance')
+    def method_set_mixer_balance(self, balance: 'i') -> 'b': # type: ignore
+        self.core_engine.set_mixer_balance(balance)
+        return True
+
 
 class ArctisManagerDbusSettingsService(ServiceInterface):
     def __init__(self, core: CoreEngine):

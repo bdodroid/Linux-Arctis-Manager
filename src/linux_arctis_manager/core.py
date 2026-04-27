@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import sys
 from typing import Any, Callable, Coroutine, Literal, cast
 
@@ -40,6 +41,9 @@ class CoreEngine:
 
     media_mix: int
     chat_mix: int
+    _mixer_lockout_until: float = 0
+    _last_hw_media_mix: int | None = None
+    _last_hw_chat_mix: int | None = None
 
     device_status_observers: list[Callable[[dict[str, int]], None]]
     device_settings_observers: list[Callable[[DeviceSettings], None]]
@@ -83,6 +87,9 @@ class CoreEngine:
         if not self.device_status or not self.device_config:
             return
 
+        if time.time() < self._mixer_lockout_until:
+            return
+
         new_media_mix = self.device_status.get('media_mix', None)
         new_chat_mix = self.device_status.get('chat_mix', None)
 
@@ -92,7 +99,14 @@ class CoreEngine:
         new_media_mix = parsed_status({'media_mix': new_media_mix}, self.device_config).get('media_mix', self.media_mix)
         new_chat_mix = parsed_status({'chat_mix': new_chat_mix}, self.device_config).get('chat_mix', self.chat_mix)
 
-        if new_media_mix != self.media_mix or new_chat_mix != self.chat_mix:
+        # Only apply if hardware values actually changed (user turned the physical dial),
+        # not just because they differ from the current software mix.
+        # This prevents stale hardware values from overriding GUI slider changes.
+        hw_changed = (new_media_mix != self._last_hw_media_mix or new_chat_mix != self._last_hw_chat_mix)
+        self._last_hw_media_mix = new_media_mix
+        self._last_hw_chat_mix = new_chat_mix
+
+        if hw_changed and (new_media_mix != self.media_mix or new_chat_mix != self.chat_mix):
             self.media_mix = new_media_mix
             self.chat_mix = new_chat_mix
             self.pa_audio_manager.set_mix(self.media_mix, self.chat_mix)
@@ -113,21 +127,34 @@ class CoreEngine:
                 return
 
             if self.device_config.status is not None:
-                self.logger.debug(f'Response: {read_input}')
+                self.logger.debug(f'Interface {interface_id} Response: {read_input}')
 
                 for mapping in self.device_config.status.response_mapping:
-                    starts_with = f'{mapping.starts_with:02x}'
-                    if len(starts_with) % 2 != 0:
-                        starts_with = f'0{starts_with}'
-                    read_hex_str = ''.join(f'{byte:02x}' for byte in read_input)
+                    if isinstance(mapping.starts_with, list):
+                        starts_with_list = mapping.starts_with
+                        offset = 0
+                    else:
+                        # Legacy/Simple matching: skip Report ID 1 and match against index 1
+                        starts_with_list = [mapping.starts_with]
+                        offset = 1 if len(read_input) > 1 and read_input[0] == 1 else 0
 
-                    if read_hex_str.startswith(starts_with):
+                    match = True
+                    for i, val in enumerate(starts_with_list):
+                        idx = i + offset
+                        if idx >= len(read_input) or read_input[idx] != val:
+                            match = False
+                            break
+                    
+                    if match:
                         device_status = mapping.get_status_values(read_input)
                         if self.device_status is None:
                             self.device_status = self.new_device_status()
                         self.device_status.update(device_status)
                 
-                self.manage_mix_change()
+                try:
+                    self.manage_mix_change()
+                except Exception as e:
+                    self.logger.error(f'Error in manage_mix_change: {e}')
 
             await asyncio.sleep(0.1)
         except usb.core.USBError as e:
@@ -279,6 +306,41 @@ class CoreEngine:
         if observer not in self.device_status_observers:
             self.device_status_observers.append(observer)
     
+    def set_mixer_balance(self, balance: int):
+        """
+        Sets the software mixer balance (0-100).
+        0 = 100% Media, 0% Chat
+        50 = 100% Media, 100% Chat
+        100 = 0% Media, 100% Chat
+        """
+        self._mixer_lockout_until = time.time() + 1.0
+        if balance <= 50:
+            self.media_mix = 100
+            self.chat_mix = balance * 2
+        else:
+            self.chat_mix = 100
+            self.media_mix = 100 - (balance - 50) * 2
+        
+        self.pa_audio_manager.set_mix(self.media_mix, self.chat_mix)
+
+        # Attempt to sync to hardware (only for devices with known mixer protocol)
+        if self.usb_device and self.device_config:
+            has_mixer_representation = (
+                self.device_config.status is not None
+                and 'mixer' in self.device_config.status.representation
+            )
+            # Only send hardware command for devices where we know the mixer protocol.
+            # The 0x06,0x47 command is verified for Nova Pro Wireless.
+            # Nova Elite and others may use different commands.
+            if has_mixer_representation and any(
+                hasattr(m, 'media_mix') for m in self.device_config.status.response_mapping
+            ):
+                try:
+                    endpoint = self.get_command_endpoint_address()
+                    self.send_command([0x06, 0x47, self.media_mix, 0x00, self.chat_mix], endpoint, self.device_config.command_interface_index[1])
+                except Exception as e:
+                    self.logger.warning(f"Failed to sync mixer to hardware: {e}")
+
     def on_device_status_changed(self, key: str, value: int):
         if self.device_config and self.device_config.online_status and key == self.device_config.online_status.status_variable:
             if self.is_device_online():
