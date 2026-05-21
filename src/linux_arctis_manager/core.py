@@ -133,6 +133,14 @@ class CoreEngine:
                     if isinstance(mapping.starts_with, list):
                         starts_with_list = mapping.starts_with
                         offset = 0
+                    elif mapping.starts_with > 0xff:
+                        # Handle multi-byte headers provided as integers (e.g., 0x0745 -> [0x07, 0x45])
+                        val = mapping.starts_with
+                        starts_with_list = []
+                        while val > 0:
+                            starts_with_list.insert(0, val & 0xff)
+                            val >>= 8
+                        offset = 0
                     else:
                         # Legacy/Simple matching: skip Report ID 1 and match against index 1
                         starts_with_list = [mapping.starts_with]

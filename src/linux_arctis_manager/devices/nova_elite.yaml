@@ -20,14 +20,16 @@ device:
     request: 0x06b0
     response_mapping:
       - starts_with: 0xb0
-        media_mix: 6
-        chat_mix: 7
         headset_battery_charge: 8
         mic_status: 9
         headset_power_status: 15
 
       - starts_with: [7, 37]
         station_volume: 2
+
+      - starts_with: [7, 69]
+        media_mix: 2
+        chat_mix: 3
 
     representation:
       headset:
@@ -60,8 +62,8 @@ device:
   status_parse:
     station_volume:
       type: percentage
-      perc_min: 255 # Calibrated: Hubs usually use 0-255 or 0-160. Let's try 255.
-      perc_max: 0
+      perc_min: 0
+      perc_max: 56 # Verified: raw 0 = muted, raw 56 = max volume
     media_mix:
       type: percentage
       perc_min: 0
