@@ -83,33 +83,64 @@ class CoreEngine:
         self._stopping = True
         self.usb_devices_monitor.stop()
 
-    def manage_mix_change(self):
-        if not self.device_status or not self.device_config:
+    def handle_hw_mix_change(self, raw_media_mix: int | None, raw_chat_mix: int | None):
+        if not self.device_config:
             return
 
         if time.time() < self._mixer_lockout_until:
             return
 
-        new_media_mix = self.device_status.get('media_mix', None)
-        new_chat_mix = self.device_status.get('chat_mix', None)
-
-        if new_media_mix is None or new_chat_mix is None:
+        if raw_media_mix is None and raw_chat_mix is None:
             return
-        
-        new_media_mix = parsed_status({'media_mix': new_media_mix}, self.device_config).get('media_mix', self.media_mix)
-        new_chat_mix = parsed_status({'chat_mix': new_chat_mix}, self.device_config).get('chat_mix', self.chat_mix)
 
-        # Only apply if hardware values actually changed (user turned the physical dial),
-        # not just because they differ from the current software mix.
-        # This prevents stale hardware values from overriding GUI slider changes.
-        hw_changed = (new_media_mix != self._last_hw_media_mix or new_chat_mix != self._last_hw_chat_mix)
-        self._last_hw_media_mix = new_media_mix
-        self._last_hw_chat_mix = new_chat_mix
+        # Fallback to current values if one of them is missing
+        if raw_media_mix is None:
+            raw_media_mix = self.device_status.get('media_mix', self.media_mix) if self.device_status else self.media_mix
+        if raw_chat_mix is None:
+            raw_chat_mix = self.device_status.get('chat_mix', self.chat_mix) if self.device_status else self.chat_mix
 
-        if hw_changed and (new_media_mix != self.media_mix or new_chat_mix != self.chat_mix):
-            self.media_mix = new_media_mix
-            self.chat_mix = new_chat_mix
-            self.pa_audio_manager.set_mix(self.media_mix, self.chat_mix)
+        # Parse raw values to percentage
+        parsed_vals = parsed_status({'media_mix': raw_media_mix, 'chat_mix': raw_chat_mix}, self.device_config)
+        new_media_mix = parsed_vals.get('media_mix', self.media_mix)
+        new_chat_mix = parsed_vals.get('chat_mix', self.chat_mix)
+
+        # 1. Initialize baseline if it is None
+        if self._last_hw_media_mix is None or self._last_hw_chat_mix is None:
+            self._last_hw_media_mix = new_media_mix
+            self._last_hw_chat_mix = new_chat_mix
+            # If device_status is missing mixer values (e.g. at startup/reconnect), initialize them
+            if self.device_status is not None and ('media_mix' not in self.device_status or 'chat_mix' not in self.device_status):
+                self.device_status.update({
+                    'media_mix': raw_media_mix,
+                    'chat_mix': raw_chat_mix
+                })
+                self.media_mix = new_media_mix
+                self.chat_mix = new_chat_mix
+                self.pa_audio_manager.set_mix(self.media_mix, self.chat_mix)
+            return
+
+        # 2. Check if the physical hardware position has changed significantly (threshold to avoid jitter/periodic updates)
+        THRESHOLD = 3
+        hw_changed = (
+            abs(new_media_mix - self._last_hw_media_mix) >= THRESHOLD
+            or abs(new_chat_mix - self._last_hw_chat_mix) >= THRESHOLD
+        )
+
+        if hw_changed:
+            self._last_hw_media_mix = new_media_mix
+            self._last_hw_chat_mix = new_chat_mix
+
+            if new_media_mix != self.media_mix or new_chat_mix != self.chat_mix:
+                self.media_mix = new_media_mix
+                self.chat_mix = new_chat_mix
+                self.pa_audio_manager.set_mix(self.media_mix, self.chat_mix)
+            
+            # Update device_status only on physical change so observers (like GUI) sync
+            if self.device_status is not None:
+                self.device_status.update({
+                    'media_mix': raw_media_mix,
+                    'chat_mix': raw_chat_mix
+                })
     
     async def listen_endpoint_loop(self, interface_id: int):
         if self.usb_device is None:
@@ -155,14 +186,18 @@ class CoreEngine:
                     
                     if match:
                         device_status = mapping.get_status_values(read_input)
+                        raw_media_mix = device_status.pop('media_mix', None)
+                        raw_chat_mix = device_status.pop('chat_mix', None)
+
                         if self.device_status is None:
                             self.device_status = self.new_device_status()
                         self.device_status.update(device_status)
-                
-                try:
-                    self.manage_mix_change()
-                except Exception as e:
-                    self.logger.error(f'Error in manage_mix_change: {e}')
+
+                        if raw_media_mix is not None or raw_chat_mix is not None:
+                            try:
+                                self.handle_hw_mix_change(raw_media_mix, raw_chat_mix)
+                            except Exception as e:
+                                self.logger.error(f'Error in handle_hw_mix_change: {e}')
 
             await asyncio.sleep(0.1)
         except usb.core.USBError as e:
@@ -331,8 +366,15 @@ class CoreEngine:
         
         self.pa_audio_manager.set_mix(self.media_mix, self.chat_mix)
 
+        # Update self.device_status so observers (like GUI/DBus) get the active mix
+        if self.device_status is not None:
+            self.device_status.update({
+                'media_mix': self.media_mix,
+                'chat_mix': self.chat_mix
+            })
+
         # Attempt to sync to hardware (only for devices with known mixer protocol)
-        if self.usb_device and self.device_config:
+        if self.usb_device and self.device_config and getattr(self.device_config, 'sync_mixer_to_hardware', True):
             has_mixer_representation = (
                 self.device_config.status is not None
                 and 'mixer' in self.device_config.status.representation
@@ -544,6 +586,8 @@ class CoreEngine:
                 usb.util.dispose_resources(self.usb_device)
         self.redirect_audio_on_disconnect()
         
+        self._last_hw_media_mix = None
+        self._last_hw_chat_mix = None
         self.usb_device = None
         self.device_config = None
         self.device_status = None

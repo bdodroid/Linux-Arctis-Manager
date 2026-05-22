@@ -123,6 +123,7 @@ class DeviceConfiguration:
     status: ConfigStatus | None
     status_parse: dict[str, ConfigStatusParser]
     online_status: OnlineStatusConfig | None
+    sync_mixer_to_hardware: bool
     settings: dict[str, list[ConfigSetting]]
 
     def __init__(self, raw_configuration: dict[str, Any]):
@@ -131,6 +132,7 @@ class DeviceConfiguration:
             raise ValueError("Invalid configuration: missing 'device' section")
 
         self.name = raw_config.get('name', '')
+        self.sync_mixer_to_hardware = raw_config.get('sync_mixer_to_hardware', True)
         self.vendor_id = raw_config.get('vendor_id', 0)
         self.product_ids = raw_config.get('product_ids', [])
         self.command_interface_index = raw_config.get('command_interface_index', (-1, -1))

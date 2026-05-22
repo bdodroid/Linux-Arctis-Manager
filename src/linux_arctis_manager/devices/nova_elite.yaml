@@ -7,6 +7,7 @@ device:
     length: 64
     position: end
     filler: 0x00
+  sync_mixer_to_hardware: false
 
   command_interface_index: [0, 3]
   listen_interface_indexes: [3, 4]
