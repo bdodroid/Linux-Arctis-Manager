@@ -149,6 +149,32 @@ Install `pipx` with your package manager.
    # using pip: find ./dist -name "*.whl" | head -n1 | xargs pip install --user --force-reinstall
    ```
 
+#### Rebuilding & Reinstalling
+
+If you pull updates or modify the source code, use this clean update flow:
+
+1. Stop the active daemon service:
+   ```bash
+   systemctl --user stop arctis-manager
+   ```
+
+2. Rebuild the wheel:
+   ```bash
+   rm -rf dist
+   uv build
+   ```
+
+3. Remove the old environment and install the new wheel:
+   ```bash
+   rm -rf ~/.local/share/pipx/venvs/linux-arctis-manager
+   find ./dist -name "*.whl" | head -n1 | xargs pipx install
+   ```
+
+4. Start the daemon service again:
+   ```bash
+   systemctl --user start arctis-manager
+   ```
+
 ---
 
 ### Final Setup

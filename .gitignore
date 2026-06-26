@@ -11,3 +11,5 @@ wheels/
 
 # Code coverage reports
 .coverage
+
+.antigravitycli/
